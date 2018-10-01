@@ -13,6 +13,7 @@
  */
 package io.reactivex.android.schedulers;
 
+import android.annotation.SuppressLint;
 import android.os.Handler;
 import android.os.Message;
 import io.reactivex.Scheduler;
@@ -23,9 +24,11 @@ import java.util.concurrent.TimeUnit;
 
 final class HandlerScheduler extends Scheduler {
     private final Handler handler;
+    private final boolean async;
 
-    HandlerScheduler(Handler handler) {
+    HandlerScheduler(Handler handler, boolean async) {
         this.handler = handler;
+        this.async = async;
     }
 
     @Override
@@ -35,25 +38,28 @@ final class HandlerScheduler extends Scheduler {
 
         run = RxJavaPlugins.onSchedule(run);
         ScheduledRunnable scheduled = new ScheduledRunnable(handler, run);
-        handler.postDelayed(scheduled, Math.max(0L, unit.toMillis(delay)));
+        handler.postDelayed(scheduled, unit.toMillis(delay));
         return scheduled;
     }
 
     @Override
     public Worker createWorker() {
-        return new HandlerWorker(handler);
+        return new HandlerWorker(handler, async);
     }
 
     private static final class HandlerWorker extends Worker {
         private final Handler handler;
+        private final boolean async;
 
         private volatile boolean disposed;
 
-        HandlerWorker(Handler handler) {
+        HandlerWorker(Handler handler, boolean async) {
             this.handler = handler;
+            this.async = async;
         }
 
         @Override
+        @SuppressLint("NewApi") // Async will only be true when the API is available to call.
         public Disposable schedule(Runnable run, long delay, TimeUnit unit) {
             if (run == null) throw new NullPointerException("run == null");
             if (unit == null) throw new NullPointerException("unit == null");
@@ -69,7 +75,11 @@ final class HandlerScheduler extends Scheduler {
             Message message = Message.obtain(handler, scheduled);
             message.obj = this; // Used as token for batch disposal of this worker's runnables.
 
-            handler.sendMessageDelayed(message, Math.max(0L, unit.toMillis(delay)));
+            if (async) {
+                message.setAsynchronous(true);
+            }
+
+            handler.sendMessageDelayed(message, unit.toMillis(delay));
 
             // Re-check disposed state for removing in case we were racing a call to dispose().
             if (disposed) {
@@ -96,7 +106,7 @@ final class HandlerScheduler extends Scheduler {
         private final Handler handler;
         private final Runnable delegate;
 
-        private volatile boolean disposed;
+        private volatile boolean disposed; // Tracked solely for isDisposed().
 
         ScheduledRunnable(Handler handler, Runnable delegate) {
             this.handler = handler;
@@ -114,8 +124,8 @@ final class HandlerScheduler extends Scheduler {
 
         @Override
         public void dispose() {
-            disposed = true;
             handler.removeCallbacks(this);
+            disposed = true;
         }
 
         @Override
